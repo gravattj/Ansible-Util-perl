@@ -1,21 +1,26 @@
 package Ansible::Util::Run;
 
+=head1 NAME
+
+Ansible::Util::Run - Wrapper for Ansible CLI commands.
+
+=cut
+
 use Modern::Perl;
 use Moose;
 use namespace::autoclean;
 use Kavorka 'method';
 use Data::Printer alias => 'pdump';
-use File::Temp;
 
-extends 'Ansible::Util';
-
-with 
-    'Ansible::Util::Roles::Constants',
-    'Util::Medley::Roles::Attributes::Spawn';
+with 'Ansible::Util::Roles::Constants';
 
 ##############################################################################
 # PUBLIC ATTRIBUTES
 ##############################################################################
+
+with
+  'Ansible::Util::Roles::Attr::VaultPasswordFiles',
+  'Util::Medley::Roles::Attributes::Spawn';
 
 ##############################################################################
 # PRIVATE_ATTRIBUTES
@@ -55,12 +60,12 @@ method ansiblePlaybook (Str           :$playbook,
 
 method _getVaultPasswordArgs {
 
-    my @args;
-    foreach my $file (@{$self->vaultPasswordFiles}) {
-        push @args, ARGS_VAULT_PASS_FILE(), $file;
-    }	
-    
-    return @args;
+	my @args;
+	foreach my $file ( @{ $self->vaultPasswordFiles } ) {
+		push @args, ARGS_VAULT_PASS_FILE(), $file;
+	}
+
+	return @args;
 }
 
 1;

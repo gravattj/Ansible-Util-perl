@@ -1,7 +1,6 @@
 use Test::More;
 use Modern::Perl;
 use Data::Printer alias => 'pdump';
-use Ansible::Util;
 
 use lib 't/';
 use Local::Ansible::Test1;
@@ -10,10 +9,7 @@ use Local::Ansible::Test1;
 
 use_ok('Ansible::Util::Run');
 
-my $util = Ansible::Util->new;
-ok($util);
-
-my $run = $util->select('Run');
+my $run = Ansible::Util::Run->new;
 isa_ok( $run, 'Ansible::Util::Run' );
 
 my $Test1 = Local::Ansible::Test1->new;

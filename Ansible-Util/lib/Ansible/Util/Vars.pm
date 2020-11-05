@@ -1,5 +1,11 @@
 package Ansible::Util::Vars;
 
+=head1 NAME
+
+Ansible::Util::Vars - Read Ansible runtime vars into Perl
+
+=cut
+
 use Modern::Perl;
 use Moose;
 use namespace::autoclean;
@@ -9,22 +15,23 @@ use File::Temp;
 use Hash::DotPath;
 use JSON;
 use YAML ();
+use Ansible::Util::Run;
 
-extends 'Ansible::Util';
-
-with 
-    'Ansible::Util::Roles::Constants',
-    'Util::Medley::Roles::Attributes::Cache',
-    'Util::Medley::Roles::Attributes::File';
+with 'Ansible::Util::Roles::Constants';
 
 ##############################################################################
 # PUBLIC ATTRIBUTES
 ##############################################################################
 
-has keepTempFiles => (
-    is => 'rw',
-    isa => 'Bool',
-    default => 0,
+with
+  'Ansible::Util::Roles::Attr::VaultPasswordFiles',
+  'Util::Medley::Roles::Attributes::Cache',
+  'Util::Medley::Roles::Attributes::File';
+
+has cacheEnabled => (
+	is      => 'rw',
+	isa     => 'Bool',
+	default => 1,
 );
 
 has cacheExpireSecs => (
@@ -33,10 +40,16 @@ has cacheExpireSecs => (
 	default => sub { DEFAULT_CACHE_EXPIRE_SECS() },
 );
 
-has cacheEnabled => (
+has keepTempFiles => (
 	is      => 'rw',
 	isa     => 'Bool',
-	default => 1,
+	default => 0,
+);
+
+has tempDir => (
+	is      => 'rw',
+	isa     => 'Str',
+	default => '.',
 );
 
 ##############################################################################
@@ -44,15 +57,16 @@ has cacheEnabled => (
 ##############################################################################
 
 has _tempFiles => (
-    is => 'rw',
-    isa => 'ArrayRef',
-    default => sub {[]},
+	is      => 'rw',
+	isa     => 'ArrayRef',
+	default => sub { [] },
 );
 
 ##############################################################################
 # CONSTRUCTOR
 ##############################################################################
 
+# uncoverable branch false count:1
 method BUILD {
 
 	$self->Cache->ns( CACHE_NS_VARS() );
@@ -60,155 +74,151 @@ method BUILD {
 	$self->Cache->enabled( $self->cacheEnabled );
 }
 
+##############################################################################
+# DESTRUCTOR
+##############################################################################
+
+# uncoverable branch false count:1
 method DEMOLISH {
 
-    if (!$self->keepTempFiles) {
-    
-        foreach my $tempFile (@{ $self->_tempFiles }) {	
-            $self->File->unlink($tempFile);
-        }
-    }	
+	if ( !$self->keepTempFiles ) {
+		foreach my $tempFile ( @{ $self->_tempFiles } ) {
+			$self->File->unlink($tempFile);
+		}
+	}
 }
 
 ##############################################################################
 # PUBLIC METHODS
 ##############################################################################
 
+# uncoverable branch false count:1
 method clearCache {
 
 	$self->Cache->clear;
+
+	return 1;
+}
+
+# uncoverable branch false count:1
+method disableCache {
+
+	my $orig = $self->cacheEnabled;
+
+	$self->cacheEnabled(0);
+	$self->Cache->enabled( $self->cacheEnabled );
+
+	return $orig;
+}
+
+# uncoverable branch false count:1
+method enableCache {
+
+	my $orig = $self->cacheEnabled;
+
+	$self->cacheEnabled(1);
+	$self->Cache->enabled( $self->cacheEnabled );
+
+	return $orig;
 }
 
 method getValue (Str $path!) {
 
-    my $href = $self->getVar(@_);
-    my $dotResp = Hash::DotPath->new($href);
-   
-    # --> Any (value @ hash key)
-    return $dotResp->get($path);  
+	my $href    = $self->getVar(@_);
+	my $dotResp = Hash::DotPath->new($href);
+
+	# --> Any (value @ path)
+	return $dotResp->get($path);
 }
 
 method getVar (Str $path!) {
 
-	return $self->getVars( [$path] ); # --> HashRef
+	return $self->getVars( [$path] );
 }
-
-=pod
 
 method getVars (ArrayRef $paths!) {
 
-	my $dotCached = $self->_cacheGet;
-	
-	my @missingVars;
-	foreach my $dotPath (@$paths) {
-		if ( !$dotCached->exists($dotPath)) {
-			push @missingVars, $dotPath;
-		}
-	}
-	
-	my $dotMissing = $self->_getVars(\@missingVars);
-	my $dotMerged = $dotCached->merge($dotMissing);
+	my @missing;
+	my $cached = Hash::DotPath->new( $self->_getCache );
 
-	if (@missingVars) {
-		# only update cache if we had to fetch something
-	   $self->_cacheSet($dotMerged);
-	}
-
-    my $dotResp = Hash::DotPath->new;
-    
-	foreach my $dotPath (@$paths) {
-		if ( $dotMerged->exists( $dotPath ) ) {
-		    my $value =  $dotMerged->get($dotPath);	
-			$dotResp->set($dotPath, $value);
+	foreach my $path (@$paths) {
+		if ( !$cached->exists($path) ) {
+			push @missing, $path;
 		}
 	}
 
-    # --> HashRef	
-	return $dotResp->toHashRef;
+	my $href   = $self->_getVars( \@missing );
+	my $merged = $cached->merge($href);
+	$self->_setCache( $merged->toHashRef );
+
+	#
+	# now extract just the requested paths because the cache might
+	# have a superset of what was requested.
+	#
+	my $result = Hash::DotPath->new;
+	foreach my $path (@$paths) {
+		$result->set( $path, $merged->get($path) );
+	}
+
+	return $result->toHashRef;
 }
-
-=cut
-
-method getVars (ArrayRef $paths!) {
-
-    return $self->_getVars($paths);
-}
-
 
 ##############################################################################
 # PRIVATE METHODS
 ##############################################################################
 
-method _cacheAdd (HashRef $newVars) {
+method _getTempFile (Str $suffix!) {
 
-	my $cachedVars = $self->_cacheGet;
+	my $dir = $self->tempDir;
+	$self->File->mkdir($dir);
 
-	my $merge      = Hash::Merge->new('LEFT_PRECEDENT');
-	my $mergedVars = $merge->merge( $newVars, $cachedVars );
+	my ( $tempFh, $tempFilename ) =
+	  File::Temp::tempfile( DIR => $dir, SUFFIX => $suffix );
+	close($tempFh);
 
-	$self->_setCache(
-		key  => CACHE_KEY(),
-		data => $mergedVars
-	);
+	$tempFilename = sprintf '%s/%s', $dir, $self->File->basename($tempFilename);
+	push @{ $self->_tempFiles }, $tempFilename;
+
+	return $tempFilename;
 }
 
-method _getTempFile (Str $dir? = '.',
-                     Str $suffix?) {
-    
-    my ( $tempFh, $tempFilename ) =
-      File::Temp::tempfile( dir => $dir, SUFFIX => $suffix);
-    close($tempFh);
-    
-    push @{ $self->_tempFiles }, $tempFilename;   
+method _getVars (ArrayRef $vars!) {
 
-    return $tempFilename;	
-}
+	return {} if @$vars < 1;
 
-method _getVars (ArrayRef $vars) {
-	
 	#
 	# save template j2 file
 	#
-	#my ( $templateFh, $templateFilename ) =
-	#  File::Temp::tempfile( dir => '.', SUFFIX => '-template.j2' );
-	#close($templateFh);
-    my $templateFilename = $self->_getTempFile('.', '-template.j2');
-   
-    my @content; 
+	my $templateFilename = $self->_getTempFile('-template.j2');
+
+	my @content;
 	foreach my $var (@$vars) {
 		push @content, "{{ my_vars | to_nice_json }} ";
 	}
-	
-    $self->File->write( $templateFilename, join("\n", @content));
+
+	$self->File->write( $templateFilename, join( "\n", @content ) );
 
 	#
 	# create a placeholder for the template output
 	#
-#	my ( $outputFh, $outputFilename ) =
-#	  File::Temp::tempfile( dir => '.', SUFFIX => '-output.json' );
-#	close($outputFh);
-    my $outputFilename = $self->_getTempFile('.', '-output.json');
+	my $outputFilename = $self->_getTempFile('-output.json');
 
 	#
 	# create the playbook
 	#
-#	my ( $pbFh, $pbFilename ) =
-#	  File::Temp::tempfile( dir => '.', SUFFIX => '-playbook.yml' );
-#	close($pbFh);
-    my $pbFilename = $self->_getTempFile('.', '-playbook.yml');
-    
-	my $content = $self->_buildPlaybook(
-		 $vars,
-		 $templateFilename,
-		 $outputFilename
-	);
+	my $pbFilename = $self->_getTempFile('-playbook.yml');
+
+	my $content =
+	  $self->_buildPlaybook( $vars, $templateFilename, $outputFilename );
 
 	$self->File->write( $pbFilename, $content );
 
 	#
 	# execute
 	#
-	my $run = $self->select('Run');
+	my $run = Ansible::Util::Run->new(
+		vaultPasswordFiles => $self->vaultPasswordFiles );
+
 	my ( $stdout, $stderr, $exit ) =
 	  $run->ansiblePlaybook( playbook => $pbFilename );
 	confess $stderr if $exit;
@@ -220,87 +230,38 @@ method _getVars (ArrayRef $vars) {
 	my $json      = JSON->new;
 	my $answer    = $json->decode($json_text);
 
-	#
-	# cleanup
-	#
-#	if ( !$keepTempFiles ) {
-#		$self->File->unlink($templateFilename);
-#		$self->File->unlink($outputFilename);
-#		$self->File->unlink($pbFileName);
-#	}
-
 	# return answer
 	return $answer;
 }
 
-=pod
+method _buildPlaybookVars (ArrayRef $vars!) {
 
-method _buildPlaybookVars (ArrayRef $vars) {
+	my $dot = Hash::DotPath->new;
 
-    my $dot = Hash::DotPath->new;
-   
-    my $href = {};
-    foreach my $var (@$vars) {
+	foreach my $var (@$vars) {
+		$dot->set( $var, sprintf '{{ %s }}', $var );
+	}
 
-        my @keys = split /\./, $var;
-        my $tail = pop @keys;
-        my $ptr  = $href;
+	my $my_vars_yaml = YAML::Dump( $dot->toHashRef );
 
-        foreach my $key (@keys) {
-            if ( !exists $ptr->{$key} ) {
-                $ptr->{$key} = {};
-            }
+	my @indented;
+	foreach my $line ( split /\n/, $my_vars_yaml ) {
+		next if $line eq '---';    # remove new document syntax
+		push @indented, sprintf '%s%s', ' ' x 6, $line;
+	}
 
-            $ptr = $ptr->{$key};
-        }
-        
-        $ptr->{$tail} = sprintf '{{ %s }}', $var;
-    }
-    
-    my $my_vars_yaml = YAML::Dump($href);
+	$my_vars_yaml = join "\n", @indented;    # overwrite
 
-    my @indented;
-    foreach my $line ( split /\n/, $my_vars_yaml ) {
-        next if $line eq '---';    # remove new document syntax
-        push @indented, sprintf '%s%s', ' ' x 6, $line;
-    }
-
-    
-    $my_vars_yaml = join "\n", @indented;    # overwrite
-   
-    return $my_vars_yaml; 	
-}
-
-=cut
-
-method _buildPlaybookVars (ArrayRef $vars) {
-
-    my $dot = Hash::DotPath->new;
-   
-    foreach my $var (@$vars) {
-        $dot->set($var, sprintf '{{ %s }}', $var);
-    }
-    
-    my $my_vars_yaml = YAML::Dump($dot->toHashRef);
-
-    my @indented;
-    foreach my $line ( split /\n/, $my_vars_yaml ) {
-        next if $line eq '---';    # remove new document syntax
-        push @indented, sprintf '%s%s', ' ' x 6, $line;
-    }
-    
-    $my_vars_yaml = join "\n", @indented;    # overwrite
-   
-    return $my_vars_yaml;   
+	return $my_vars_yaml;
 }
 
 method _buildPlaybook (ArrayRef $vars!,
                        Str      $template_src!,
                        Str      $template_dest!) {
 
-    my $my_vars_yaml = $self->_buildPlaybookVars($vars);
+	my $my_vars_yaml = $self->_buildPlaybookVars($vars);
 
-    my $content = qq{
+	my $content = qq{
 - hosts: localhost
   connection: local
   gather_facts: yes
@@ -316,23 +277,21 @@ $my_vars_yaml
         
 };
 
-    return $content;
+	return $content;
 }
 
-method _cacheGet {
+method _getCache {
 
 	my $vars = $self->Cache->get( key => CACHE_KEY() );
 	if ( !$vars ) {
-		return Hash::DotPath->new({});
+		return {};
 	}
 
-    return $vars;	
+	return $vars;
 }
 
-method _cacheSet (Hash::DotHash $dot) {
+method _setCache (HashRef $href!) {
 
-    my $href = $dot->toHashRef;
-    
 	$self->Cache->set(
 		key  => CACHE_KEY(),
 		data => $href,

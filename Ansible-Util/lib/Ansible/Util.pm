@@ -1,5 +1,11 @@
 package Ansible::Util;
 
+=head1 NAME
+
+Ansible::Util - Utilities for working with Ansible.
+
+=cut
+
 use Modern::Perl;
 use Moose;
 use namespace::autoclean;
