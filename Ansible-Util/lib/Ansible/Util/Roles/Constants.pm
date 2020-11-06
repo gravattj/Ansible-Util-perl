@@ -1,13 +1,13 @@
 package Ansible::Util::Roles::Constants;
 
-=head1 NAME
-
-Ansible::Util::Roles::Constants - Utilities for working with Ansible.
-
-=cut
-
 use Modern::Perl;
 use Moose::Role;
+
+=head1 NAME
+
+Ansible::Util::Roles::Constants
+
+=cut
 
 use constant {
 	ARGS_VAULT_PASS_FILE      => '--vault-password-file',

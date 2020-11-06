@@ -2,8 +2,26 @@ package Ansible::Util::Vars;
 
 =head1 NAME
 
-Ansible::Util::Vars - Read Ansible runtime vars into Perl
+Ansible::Util::Vars
 
+=head1 SYNOPSIS
+
+  $vars = Ansible::Util::Vars->new;
+  
+  $href = $vars->getVar('foo');
+  $href = $vars->getVars(['foo', 'bar']);
+  $val  = $vars->getValue('foo');
+   
+=head1 DESCRIPTION
+
+Read Ansible runtime vars into native Perl.  
+
+To indicate which vars to read, you use the variable dot notation similar to 
+what is described in the Ansible documentation.  Further information about the 
+Perl implementation can be found in L<Hash::DotPath>.
+
+An optional cache layer is used to speed up multiple invocations.   
+ 
 =cut
 
 use Modern::Perl;
@@ -11,7 +29,7 @@ use Moose;
 use namespace::autoclean;
 use Kavorka 'method';
 use Data::Printer alias => 'pdump';
-use File::Temp;
+use File::Temp 'tempfile', 'tempdir';
 use Hash::DotPath;
 use JSON;
 use YAML ();
@@ -23,16 +41,66 @@ with 'Ansible::Util::Roles::Constants';
 # PUBLIC ATTRIBUTES
 ##############################################################################
 
+=head1 ATTRIBUTES
+
+=head2 vaultPasswordFiles
+
+A list of vault-password-files to pass to the command line.
+
+=over
+
+=item type: ArrayRef[Str]
+
+=item required: no
+
+=back
+
+=cut
+
 with
   'Ansible::Util::Roles::Attr::VaultPasswordFiles',
   'Util::Medley::Roles::Attributes::Cache',
+  'Util::Medley::Roles::Attributes::Logger',
   'Util::Medley::Roles::Attributes::File';
+
+=head2 cacheEnabled
+
+Toggle to disable/enable caching.
+
+=over
+
+=item type: Bool
+
+=item required: no
+
+=item default: 1
+
+=back
+
+=cut
 
 has cacheEnabled => (
 	is      => 'rw',
 	isa     => 'Bool',
 	default => 1,
+	writer  => '_setCacheEnabled',
 );
+
+=head2 cacheExpireSecs
+
+Controls how long to hold onto cached data.
+
+=over
+
+=item type: Int
+
+=item required: no
+
+=item default: 10 min
+
+=back
+
+=cut
 
 has cacheExpireSecs => (
 	is      => 'rw',
@@ -40,21 +108,94 @@ has cacheExpireSecs => (
 	default => sub { DEFAULT_CACHE_EXPIRE_SECS() },
 );
 
+=head2 hosts
+
+Choose which managed nodes or groups you want to execute against.  This format
+of this is exactly the same as defined in "Patterns: targeting hosts and groups" 
+by the Ansible documentation.
+
+=over
+
+=item type: Str
+
+=item required: no
+
+=item default: localhost
+
+=back
+
+=cut
+
+has hosts => (
+	is      => 'rw',
+	isa     => 'Str',
+	default => 'localhost',
+);
+
+=head2 keepTempFiles
+
+Keeps the generated tempfiles for debugging/troubleshooting.  The tempfiles 
+used are a playbook, template, and json output.
+
+=over
+
+=item type: Bool
+
+=item required: no
+
+=item default: 0
+
+=back
+
+=cut
+
 has keepTempFiles => (
 	is      => 'rw',
 	isa     => 'Bool',
 	default => 0,
 );
 
-has tempDir => (
+=head2 keepTempFilesOnError
+
+This is a toggle to keep the generated tempfiles when Ansible exits with an
+error.  
+
+=over
+
+=item type: Bool
+
+=item required: no
+
+=item default: 0
+
+=back
+
+=cut
+
+has keepTempFilesOnError => (
 	is      => 'rw',
-	isa     => 'Str',
-	default => '.',
+	isa     => 'Bool',
+	default => 1,
 );
 
 ##############################################################################
 # PRIVATE_ATTRIBUTES
 ##############################################################################
+
+has _exitDueToAnsibleError => (
+	is      => 'rw',
+	isa     => 'Bool',
+	default => 0,
+);
+
+has _tempDir => (
+	is        => 'rw',
+	isa       => 'Str',
+	lazy      => 1,
+	builder   => '_buildTempDir',
+	predicate => '_hasTempDir',
+	clearer   => '_clearTempDir',
+);
 
 has _tempFiles => (
 	is      => 'rw',
@@ -81,16 +222,40 @@ method BUILD {
 # uncoverable branch false count:1
 method DEMOLISH {
 
-	if ( !$self->keepTempFiles ) {
-		foreach my $tempFile ( @{ $self->_tempFiles } ) {
-			$self->File->unlink($tempFile);
-		}
+	if ( $self->keepTempFiles ) {
+
+		# do nothing
+	}
+	elsif ( $self->_exitDueToAnsibleError and $self->keepTempFilesOnError ) {
+
+		# do nothing
+	}
+	else {
+		$self->_cleanupTempFiles;
 	}
 }
 
 ##############################################################################
 # PUBLIC METHODS
 ##############################################################################
+
+=head1 METHODS
+
+All methods confess on error unless otherwise specified.
+
+=head2 clearCache()
+
+Clears any cached vars.
+
+=head3 usage:
+
+  $vars->clearCache;
+
+=head3 args:
+
+none
+
+=cut
 
 # uncoverable branch false count:1
 method clearCache {
@@ -100,10 +265,24 @@ method clearCache {
 	return 1;
 }
 
+=head2 disableCache()
+
+Disables caching.
+
+=head3 usage:
+
+  $vars->disableCache;
+
+=head3 args:
+
+none
+
+=cut
+
 # uncoverable branch false count:1
 method disableCache {
 
-	my $orig = $self->cacheEnabled;
+	my $orig = $self->_setCacheEnabled(0);
 
 	$self->cacheEnabled(0);
 	$self->Cache->enabled( $self->cacheEnabled );
@@ -111,16 +290,62 @@ method disableCache {
 	return $orig;
 }
 
+=head2 enableCache()
+
+Enables caching.
+
+=head3 usage:
+
+  $vars->enableCache;
+
+=head3 args:
+
+none
+
+=cut
+
 # uncoverable branch false count:1
 method enableCache {
 
-	my $orig = $self->cacheEnabled;
+	my $orig = $self->_setCacheEnabled(1);
 
 	$self->cacheEnabled(1);
 	$self->Cache->enabled( $self->cacheEnabled );
 
 	return $orig;
 }
+
+=head2 getValue()
+
+Fetches the value of the specified var.
+
+=head3 usage:
+
+  $val = $vars->getValue($path);
+  
+=head3 returns:
+
+The value found at the specified path.
+                        
+=head3 args:
+
+=over
+
+=item path
+
+The path to the variable in dot notation.  See L<Hash::DotPath> for more info.
+
+=over
+
+=item type: Str
+
+=item required: yes
+
+=back
+
+=back
+
+=cut
 
 method getValue (Str $path!) {
 
@@ -131,10 +356,95 @@ method getValue (Str $path!) {
 	return $dotResp->get($path);
 }
 
+=head2 getVar($path)
+
+Fetches the variable found at the specified path. 
+
+=head3 usage:
+
+  $href = $vars->getVar($path);
+  
+=head3 returns:
+
+A hash reference containing the requested var.  Note that this also includes
+each of the elements in the path.  Examples:
+
+  $href = $vars->getVar('foo.bar');
+  Data::Printer::p($href);
+  \ {
+    foo   {
+        bar   "somevalue"
+    }
+  }
+  
+  $href = $vars->getVar('biz.0.baz');
+  Data::Printer::p($href);
+  \ {
+    biz   [
+        [0] {
+            baz   "anothervalue"
+        }
+    ]
+}
+                        
+=head3 args:
+
+=over
+
+=item path
+
+The path to the variable in dot notation.  See L<Hash::DotPath> for more info.
+
+=over
+
+=item type: Str
+
+=item required: yes
+
+=back
+
+=back
+
+=cut
+
 method getVar (Str $path!) {
 
 	return $self->getVars( [$path] );
 }
+
+=head2 getVars([$paths])
+
+Fetches the variables found at the specified path. 
+
+=head3 usage:
+
+  $href = $vars->getVars(['foo.0.bar', 'biz']);
+  
+=head3 returns:
+
+A hash reference containing the requested vars.  The characteristics 
+are the same as described in L</getVar> except that the vars are merged into
+a single hash ref.
+
+=head3 args:
+
+=over
+
+=item path
+
+The path to the variable in dot notation.  See L<Hash::DotPath> for more info.
+
+=over
+
+=item type: ArrayRef[Str]
+
+=item required: yes
+
+=back
+
+=back
+
+=cut
 
 method getVars (ArrayRef $paths!) {
 
@@ -169,8 +479,7 @@ method getVars (ArrayRef $paths!) {
 
 method _getTempFile (Str $suffix!) {
 
-	my $dir = $self->tempDir;
-	$self->File->mkdir($dir);
+	my $dir = $self->_tempDir;
 
 	my ( $tempFh, $tempFilename ) =
 	  File::Temp::tempfile( DIR => $dir, SUFFIX => $suffix );
@@ -220,8 +529,15 @@ method _getVars (ArrayRef $vars!) {
 		vaultPasswordFiles => $self->vaultPasswordFiles );
 
 	my ( $stdout, $stderr, $exit ) =
-	  $run->ansiblePlaybook( playbook => $pbFilename );
-	confess $stderr if $exit;
+	  $run->ansiblePlaybook( playbook => $pbFilename, confessOnError => 0 );
+
+	if ($exit) {
+		$self->_exitDueToAnsibleError(1);
+		$self->Logger->warn( "keeping tempfiles located at "
+			  . $self->_tempDir
+			  . " for troubleshooting" );
+		confess $stderr if $exit;
+	}
 
 	#
 	# read the output json and put into perl var
@@ -250,34 +566,33 @@ method _buildPlaybookVars (ArrayRef $vars!) {
 		push @indented, sprintf '%s%s', ' ' x 6, $line;
 	}
 
-	$my_vars_yaml = join "\n", @indented;    # overwrite
-
-	return $my_vars_yaml;
+	return join "\n", @indented;
 }
 
 method _buildPlaybook (ArrayRef $vars!,
                        Str      $template_src!,
                        Str      $template_dest!) {
 
-	my $my_vars_yaml = $self->_buildPlaybookVars($vars);
+	my $hosts = $self->hosts;
 
-	my $content = qq{
-- hosts: localhost
-  connection: local
-  gather_facts: yes
-  
-  vars:
-    my_vars:
-$my_vars_yaml    
-  
-  tasks:
-    - template:
-        src:  $template_src
-        dest: $template_dest
-        
-};
+	my @content;
+	push @content, "- hosts: $hosts";
 
-	return $content;
+	if ( $hosts eq 'localhost' or $hosts eq '127.0.0.1' ) {
+		push @content, '  connection: local';
+	}
+
+	push @content, '  gather_facts: yes';
+	push @content, '  vars:';
+	push @content, '    my_vars:';
+	push @content, $self->_buildPlaybookVars($vars);
+	push @content, '  tasks:';
+	push @content, '    - template:';
+	push @content, "        src:  $template_src";
+	push @content, "        dest: $template_dest";
+	push @content, "\n";
+
+	return join "\n", @content;
 }
 
 method _getCache {
@@ -298,6 +613,29 @@ method _setCache (HashRef $href!) {
 	);
 
 	return $href;
+}
+
+method _cleanupTempFiles {
+
+	#
+	# cleanup the files
+	#
+	foreach my $tempFile ( @{ $self->_tempFiles } ) {
+		$self->File->unlink($tempFile);
+	}
+
+	$self->_tempFiles( [] );
+
+	#
+	# cleanup the dir
+	#
+	$self->File->rmdir( $self->_tempDir );
+	$self->_clearTempDir;
+}
+
+method _buildTempDir {
+
+	return tempdir( CLEANUP => 0 );
 }
 
 1;

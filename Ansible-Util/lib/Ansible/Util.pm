@@ -1,33 +1,52 @@
 package Ansible::Util;
 
-=head1 NAME
-
-Ansible::Util - Utilities for working with Ansible.
-
-=cut
-
 use Modern::Perl;
 use Moose;
 use namespace::autoclean;
 use Kavorka 'method';
 use Data::Printer alias => 'pdump';
-use Module::Load;
+use Ansible::Util::Run;
+use Ansible::Util::Vars;
+
+=head1 NAME
+
+Ansible::Util - Utilities for working with Ansible.
+
+=head1 SYNOPSIS
+
+  use Ansible::Util;
+  
+  $vars = Ansible::Util::Vars->new;
+  $run =  Ansible::Util::Run->new;
+  
+=head1 DESCRIPTION
+
+This is a base class that simply loads the underlying modules in one shot.   
+
+=head1 MODULES 
+
+=over
+
+=item *
+
+L<Ansible::Util::Run>
+
+=item *
+
+L<Ansible::Util::Vars>
+
+=back
+ 
+=cut
+
 
 ##############################################################################
 # CONSTANTS
 ##############################################################################
 
-with 'Ansible::Util::Roles::Constants';
-
 ##############################################################################
 # PUBLIC ATTRIBUTES
 ##############################################################################
-
-has vaultPasswordFiles => (
-	is      => 'rw',
-	isa     => 'ArrayRef[Str]',
-	default => sub { [] },
-);
 
 ##############################################################################
 # PRIVATE_ATTRIBUTES
@@ -41,30 +60,9 @@ has vaultPasswordFiles => (
 # PUBLIC METHODS
 ##############################################################################
 
-method select (Str $subClass) {
-
-	my $class = sprintf 'Ansible::Util::%s', $subClass;
-	load($class);
-
-	my %attr = $self->_dupAttributes;
-
-	return $class->new(%attr);
-}
-
 ##############################################################################
 # PRIVATE METHODS
 ##############################################################################
 
-method _dupAttributes {
-
-	my %attr;
-	my $meta = $self->meta;
-	foreach my $a ( $meta->get_all_attributes ) {
-		my $name = $a->name;
-		$attr{ $a->name } = $self->$name;
-	}
-
-	return %attr;
-}
 
 1;

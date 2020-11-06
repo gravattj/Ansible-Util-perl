@@ -5,7 +5,7 @@ use File::Temp 'tempdir';
 use Util::Medley::File;
 
 use lib 't/';
-use Local::Ansible::Test2;
+use Local::Ansible::Test1;
 
 use vars qw($File);
 
@@ -15,45 +15,34 @@ $File = Util::Medley::File->new;
 
 use_ok('Ansible::Util::Vars');
 
-#
-# first a simple happy path to ensure the vault password files worked...
-#
-my $vars = Ansible::Util::Vars->new;
-my $href = $vars->getVars(['states']);
-ok( exists $href->{states} );
-
-#
-# 
-#
-my $tempDir = tempdir( CLEANUP => 0 );
-$vars = Ansible::Util::Vars->new(keepTempFiles => 1, tempDir => $tempDir);
+my $vars = Ansible::Util::Vars->new(keepTempFiles => 1);
 ok($vars);
 ok($vars->clearCache);
 
-my $test2 = Local::Ansible::Test2->new;
+my $test1 = Local::Ansible::Test1->new;
 
 SKIP: {
 	skip "ansible-playbook executable not found"
-	  unless $test2->ansiblePlaybookExeExists;
+	  unless $test1->ansiblePlaybookExeExists;
 
-	$test2->chdir;
+	$test1->chdir;
 
-    my $href;
-    eval {
-    	$href = $vars->getVars( ['states'] );
-    };
-    ok($@);
+    my $href = $vars->getVars(['states']);
+    ok( exists $href->{states} );
     
-    $vars->vaultPasswordFiles( $test2->vaultPasswordFiles );
-
-    eval {
-        $href = $vars->getVars(['states']);
-    };
-    ok( !$@ );
-
-    my @files = $File->find($tempDir);
-    pdump $tempDir;
-    pdump @files;
+    #
+    # ensure tempfiles were not cleaned up
+    #
+    my @files = @{ $vars->_tempFiles };
+    my $tempDir = $vars->_tempDir;
+    $vars = undef;
+    
+    foreach my $file (@files) {
+        ok( -f $file );
+        $File->unlink($file);
+    }
+    
+    $File->rmdir($tempDir);
 }
 
 done_testing();

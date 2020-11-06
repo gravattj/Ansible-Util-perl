@@ -1,17 +1,22 @@
 use Test::More;
 use Modern::Perl;
 use Data::Printer alias => 'pdump';
+use Util::Medley::File;
 
 use lib 't/';
 use Local::Ansible::Test2;
 
+use vars qw($File);
+
 #########################################
+
+$File = Util::Medley::File->new;
 
 use_ok('Ansible::Util::Vars');
 
-my $vars = Ansible::Util::Vars->new;
-isa_ok( $vars, 'Ansible::Util::Vars' );
-ok( $vars->clearCache );   
+#my $vars = Ansible::Util::Vars->new;
+#isa_ok( $vars, 'Ansible::Util::Vars' );
+#ok( $vars->clearCache );
 
 my $test2 = Local::Ansible::Test2->new;
 
@@ -21,73 +26,93 @@ SKIP: {
 
 	$test2->chdir;
 
-    my $href;
-    eval {
-    	$href = $vars->getVars( ['states'] );
-    };
-    ok($@);
-  
-    $vars->vaultPasswordFiles( $test2->vaultPasswordFiles );
-   
-	getVars($vars);
-	getVar($vars);
-	getValue($vars);
-
-    #
-    # ensure tempfile cleanup worked
-    #
-	my @files = @{ $vars->_tempFiles };
-	$vars = undef;
-	
-	foreach my $file (@files) {
-		ok( !-f $file );
-	}
+	doRuntimeException();
+	doKeepFiles0();
+	doKeepFiles1();
 }
 
 done_testing();
 
 #############################################
 
-sub getVars {
-	my $vars = shift;
+sub doKeepFiles0 {
 
-	my $href = $vars->getVars( ['states'] );
-	ok( exists $href->{states} );
+	my $vars = Ansible::Util::Vars->new(
+		vaultPasswordFiles => $test2->vaultPasswordFiles,
+		keepTempFiles      => 0
+	);
+	ok( $vars->clearCache );
 
-	eval { $vars->getVars; };
-	ok($@);
+    my $href = $vars->getVars( ['states'] );
+    ok( exists $href->{states} );
+    
+	# ensure tempfile cleanup worked
+	my $dir   = $vars->_tempDir;
+	my @files = @{ $vars->_tempFiles };
+	$vars = undef;
+
+	foreach my $file (@files) {
+		ok( !-f $file );
+	}
+
+	ok( !-d $dir );
 }
 
-sub getVar {
-	my $vars = shift;
+sub doKeepFiles1 {
 
-	my $href = $vars->getVar('states.iowa');
-	my @keys = keys %{ $href->{states} };
-	ok( @keys == 1 );
+	my $vars = Ansible::Util::Vars->new(
+		vaultPasswordFiles => $test2->vaultPasswordFiles,
+		keepTempFiles      => 1
+	);
+	ok( $vars->clearCache );
 
-	$href = $vars->getVar('states.texas');
-	@keys = keys %{ $href->{states} };
-	ok( @keys == 1 );
+    my $href = $vars->getVars( ['states'] );
+    ok( exists $href->{states} );
+    
+	# ensure tempfile cleanup worked
+	my $dir   = $vars->_tempDir;
+	my @files = @{ $vars->_tempFiles };
+	$vars = undef;
 
-	$href = $vars->getVar('states.iowa.cities');
-	ok( ref( $href->{states}->{iowa}->{cities} ) eq 'ARRAY' );
+	foreach my $file (@files) {
+		ok( -f $file );
+	}
 
-	$href = $vars->getVar('states.iowa.cities.0');
-	ok( ref( $href->{states}->{iowa}->{cities}->[0] ) eq 'HASH' );
-
-	$href = $vars->getVar('states.iowa.cities.0.zip_codes.0');
-	ok( $href->{states}->{iowa}->{cities}->[0]->{zip_codes}->[0] eq '52001' );
-
-	eval { $vars->getVar; };
-	ok($@);
+	cleanup( $dir, \@files );
 }
 
-sub getValue {
-	my $vars = shift;
+sub doRuntimeException {
 
-	my $val = $vars->getValue('states.iowa.cities.0.zip_codes.0');
-	ok( $val eq '52001' );
+	#
+	# test a runtime exception (files should be kept for debug)
+	# ...this one fails because it needs vault pass files.
+	#
+	my $vars = Ansible::Util::Vars->new( keepTempFiles => 0 );
+	ok( $vars->clearCache );
 
-	eval { $vars->getValue; };
+	eval { $vars->getVars( ['states'] ); };
 	ok($@);
+
+	# ensure tempfile cleanup did NOT happen
+	my $dir   = $vars->_tempDir;
+	my @files = @{ $vars->_tempFiles };
+	$vars = undef;
+
+	foreach my $file (@files) {
+		ok( -f $file );
+	}
+
+	cleanup( $dir, \@files );
 }
+
+sub cleanup {
+
+	my ( $dir, $files ) = @_;
+
+	foreach my $file (@$files) {
+		$File->unlink($file);
+	}
+
+	$File->rmdir($dir);
+}
+

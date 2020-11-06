@@ -1,13 +1,13 @@
 package Ansible::Util::Roles::Attr::VaultPasswordFiles;
 
-=head1 NAME
-
-Ansible::Util::Roles::VaultPasswordFiles - Utilities for working with Ansible.
-
-=cut
-
 use Modern::Perl;
 use Moose::Role;
+
+=head1 NAME
+
+Ansible::Util::Roles::VaultPasswordFiles
+
+=cut
 
 has vaultPasswordFiles => (
     is      => 'rw',
