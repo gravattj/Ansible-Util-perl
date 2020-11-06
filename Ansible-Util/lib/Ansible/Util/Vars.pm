@@ -273,6 +273,10 @@ Disables caching.
 
   $vars->disableCache;
 
+=head3 returns:
+
+The previous value of the attribute 'cacheEnabled'.
+
 =head3 args:
 
 none
@@ -282,9 +286,9 @@ none
 # uncoverable branch false count:1
 method disableCache {
 
-	my $orig = $self->_setCacheEnabled(0);
-
-	$self->cacheEnabled(0);
+	my $orig = $self->cacheEnabled;
+	
+	$self->_setCacheEnabled(0);
 	$self->Cache->enabled( $self->cacheEnabled );
 
 	return $orig;
@@ -298,6 +302,10 @@ Enables caching.
 
   $vars->enableCache;
 
+=head3 returns:
+
+The previous value of the attribute 'cacheEnabled'.
+
 =head3 args:
 
 none
@@ -307,9 +315,9 @@ none
 # uncoverable branch false count:1
 method enableCache {
 
-	my $orig = $self->_setCacheEnabled(1);
+	my $orig = $self->cacheEnabled;
 
-	$self->cacheEnabled(1);
+	$self->_setCacheEnabled(1);
 	$self->Cache->enabled( $self->cacheEnabled );
 
 	return $orig;
